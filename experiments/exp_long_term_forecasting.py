@@ -84,9 +84,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return total_loss
 
     def train(self, setting):
+        print("Normalization: ", self.args.scale)
+        print("Train ratio: ", self.args.train_ratio)
+        print("Vali ratio: ", round(1.0 - self.args.train_ratio - self.args.test_ratio, 10))
+        print("Test ratio: ", self.args.test_ratio)
+
         train_data, train_loader = self._get_data(flag='train')
-        vali_data, vali_loader = self._get_data(flag='val')
-        test_data, test_loader = self._get_data(flag='test')
+        # val dan test tidak di-load — 100% dataset digunakan untuk training saja
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -95,7 +99,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         time_now = time.time()
 
         train_steps = len(train_loader)
-        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        # early_stopping dihapus — training berjalan penuh sejumlah train_epochs
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
@@ -104,8 +108,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             scaler = torch.cuda.amp.GradScaler()
 
         train_losses = []
-        vali_losses = []
-        test_losses = []
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
@@ -173,38 +175,26 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
-
             train_losses.append(train_loss)
-            vali_losses.append(vali_loss)
-            test_losses.append(test_loss)
 
             if hasattr(self.args, 'trial'):
-                self.args.trial.report(test_loss, epoch) #optune参数报告
+                self.args.trial.report(train_loss, epoch)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
-            if epoch>3 or 'weather' in self.args.data_path:# weather第一次比较好
-                early_stopping(vali_loss, self.model, path)
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f}".format(
+                epoch + 1, train_steps, train_loss))
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-
-            # get_cka(self.args, setting, self.model, train_loader, self.device, epoch)
 
         loss_path = os.path.join(path, 'loss_history.npz')
         np.savez(
             loss_path,
             train_losses=np.array(train_losses),
-            vali_losses=np.array(vali_losses),
-            test_losses=np.array(test_losses),
             epochs=np.arange(1, len(train_losses) + 1)
         )
 
+        # Simpan model checkpoint terakhir (tanpa early stopping)
         best_model_path = path + '/' + 'checkpoint.pth'
+        torch.save(self.model.state_dict(), best_model_path)
         self.model.load_state_dict(torch.load(best_model_path))
 
         return self.model
